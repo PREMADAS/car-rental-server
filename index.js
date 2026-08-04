@@ -5,9 +5,11 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
@@ -32,9 +34,12 @@ async function run() {
         console.log('Pinged your deployment. You successfully connected to MongoDB!');
 
         const carCollection = client.db("Car-Rental").collection("available-car");
+        const carsCollection = client.db("Car-Rental").collection("add-car");
+
 
         app.get('/cars', async (req, res) => {
             const result = await carCollection.find().toArray();
+
             res.send(result);
         });
 
@@ -44,6 +49,22 @@ async function run() {
             const result = await carCollection.findOne(query);
             res.send(result);
         });
+
+        app.post("/new", async (req, res) => {
+            try {
+                const newCar = req.body;
+
+                console.log(newCar);
+
+                const result = await carsCollection.insertOne(newCar);
+
+                res.status(201).send(result);
+            } catch (error) {
+                res.status(500).send({ message: error.message });
+            }
+        });
+
+
 
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);

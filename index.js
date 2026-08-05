@@ -34,7 +34,9 @@ async function run() {
         console.log('Pinged your deployment. You successfully connected to MongoDB!');
 
         const carCollection = client.db("Car-Rental").collection("available-car");
-        const carsCollection = client.db("Car-Rental").collection("add-car");
+        const addCarCollection = client.db("Car-Rental").collection("add-car");
+        const exploreCarCollection = client.db("Car-Rental").collection("explore-car");
+
 
 
         app.get('/cars', async (req, res) => {
@@ -56,9 +58,44 @@ async function run() {
 
                 console.log(newCar);
 
-                const result = await carsCollection.insertOne(newCar);
+                const result = await addCarCollection.insertOne(newCar);
 
                 res.status(201).send(result);
+            } catch (error) {
+                res.status(500).send({ message: error.message });
+            }
+        });
+
+
+
+        app.get('/explore/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await exploreCarCollection.findOne(query);
+            res.send(result);
+        });
+
+        app.get('/explore', async (req, res) => {
+            try {
+                const { search, type, available } = req.query;
+                const query = {};
+
+                if (search) {
+                    query.$or = [
+                        { brand: { $regex: search, $options: "i" } },
+                        { model: { $regex: search, $options: "i" } },
+                    ];
+                }
+
+                if (type) {
+                    query.category = { $in: type.split(",") };
+                }
+                if (available !== undefined) {
+                    query.available = available === "true";
+                }
+
+                const result = await exploreCarCollection.find(query).toArray();
+                res.send(result);
             } catch (error) {
                 res.status(500).send({ message: error.message });
             }

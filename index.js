@@ -7,6 +7,8 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -44,6 +46,7 @@ async function run() {
         const addCarCollection = client.db("Car-Rental").collection("add-car");
         const exploreCarCollection = client.db("Car-Rental").collection("explore-car");
         const userCollection = client.db("Car-Rental").collection("users");
+        const bookingsCollection = client.db("Car-Rental").collection("bookings");
 
 
         const verifyToken = (req, res, next) => {
@@ -63,6 +66,9 @@ async function run() {
         app.post('/register', async (req, res) => {
             try {
                 const { name, email, photoURL, password } = req.body;
+                if (!name || !email || !password || password.length < 6) {
+                    return res.status(400).send({ message: "Invalid input" });
+                }
 
                 const existingUser = await userCollection.findOne({ email });
                 if (existingUser) {
@@ -76,7 +82,7 @@ async function run() {
 
                 res.status(201).send({ message: "User registered successfully" });
             } catch (error) {
-                res.status(500).send({ message: error.message });
+                res.status(500).send({ message: "Something went wrong" });
             }
         });
 
@@ -104,11 +110,65 @@ async function run() {
                     httpOnly: true,
                     secure: process.env.NODE_ENV === 'production',
                     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+                    maxAge: 7 * 24 * 60 * 60 * 1000,
                 });
 
                 res.send({ message: "Login successful", user: { name: user.name, email: user.email } });
             } catch (error) {
-                res.status(500).send({ message: error.message });
+                res.status(500).send({ message: "Something went wrong" });
+            }
+        });
+
+        app.post('/google-login', async (req, res) => {
+            try {
+                const { credential } = req.body;
+
+
+                const ticket = await googleClient.verifyIdToken({
+                    idToken: credential,
+                    audience: process.env.GOOGLE_CLIENT_ID,
+                });
+
+                const payload = ticket.getPayload();
+                const { email, name, picture } = payload;
+
+
+                let user = await userCollection.findOne({ email });
+
+                if (!user) {
+
+                    const newUser = {
+                        name,
+                        email,
+                        photoURL: picture,
+                        password: null,
+                        provider: "google",
+                        createdAt: new Date(),
+                    };
+                    const result = await userCollection.insertOne(newUser);
+                    user = { ...newUser, _id: result.insertedId };
+                }
+
+
+                const token = jwt.sign(
+                    { email: user.email, id: user._id },
+                    process.env.JWT_SECRET,
+                    { expiresIn: '7d' }
+                );
+
+                res.cookie('token', token, {
+                    httpOnly: true,
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+                    maxAge: 7 * 24 * 60 * 60 * 1000,
+                });
+
+                res.send({
+                    message: "Google login successful",
+                    user: { name: user.name, email: user.email },
+                });
+            } catch (error) {
+                res.status(500).send({ message: "Something went wrong" });
             }
         });
 
@@ -120,7 +180,6 @@ async function run() {
             });
             res.send({ message: "Logged out successfully" });
         });
-
 
 
         app.get('/cars', async (req, res) => {
@@ -140,12 +199,14 @@ async function run() {
             try {
                 const newCar = req.body;
                 newCar.email = req.decoded.email;
+                newCar.booking_count = 0;
                 const result = await addCarCollection.insertOne(newCar);
                 res.status(201).send(result);
             } catch (error) {
-                res.status(500).send({ message: error.message });
+                res.status(500).send({ message: "Something went wrong" });
             }
         });
+
         app.get('/my-added-cars', verifyToken, async (req, res) => {
             const email = req.query.email;
 
@@ -156,6 +217,80 @@ async function run() {
             const query = { email: email };
             const result = await addCarCollection.find(query).toArray();
             res.send(result);
+        });
+
+
+        app.get('/my-added-cars/:id', verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const query = { _id: new ObjectId(id) };
+                const car = await addCarCollection.findOne(query);
+
+                if (!car) {
+                    return res.status(404).send({ message: "Car not found" });
+                }
+                if (car.email !== req.decoded.email) {
+                    return res.status(403).send({ message: "Forbidden access" });
+                }
+
+                res.send(car);
+            } catch (error) {
+                res.status(500).send({ message: "Something went wrong" });
+            }
+        });
+
+
+        app.patch('/my-added-cars/:id', verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const query = { _id: new ObjectId(id) };
+
+                const existingCar = await addCarCollection.findOne(query);
+                if (!existingCar) {
+                    return res.status(404).send({ message: "Car not found" });
+                }
+                if (existingCar.email !== req.decoded.email) {
+                    return res.status(403).send({ message: "Forbidden access" });
+                }
+
+                const { pricePerDay, description, available, image, carType, location } = req.body;
+
+                const updateDoc = {
+                    $set: {
+                        pricePerDay: Number(pricePerDay),
+                        description,
+                        available,
+                        image,
+                        carType,
+                        location,
+                    },
+                };
+
+                const result = await addCarCollection.updateOne(query, updateDoc);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Something went wrong" });
+            }
+        });
+
+        app.delete('/my-added-cars/:id', verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                const query = { _id: new ObjectId(id) };
+
+                const existingCar = await addCarCollection.findOne(query);
+                if (!existingCar) {
+                    return res.status(404).send({ message: "Car not found" });
+                }
+                if (existingCar.email !== req.decoded.email) {
+                    return res.status(403).send({ message: "Forbidden access" });
+                }
+
+                const result = await addCarCollection.deleteOne(query);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Something went wrong" });
+            }
         });
 
         app.get('/me', verifyToken, async (req, res) => {
@@ -176,8 +311,6 @@ async function run() {
                 photoURL: user.photoURL,
             });
         });
-
-
 
         app.get('/explore/:id', async (req, res) => {
             const id = req.params.id;
@@ -208,8 +341,42 @@ async function run() {
                 const result = await exploreCarCollection.find(query).toArray();
                 res.send(result);
             } catch (error) {
-                res.status(500).send({ message: error.message });
+                res.status(500).send({ message: "Something went wrong" });
             }
+        });
+
+        app.post('/bookings', async (req, res) => {
+            try {
+                const booking = req.body;
+                booking.createdAt = new Date();
+                booking.status = "pending";
+
+                const result = await bookingsCollection.insertOne(booking);
+
+
+                if (booking.carId) {
+                    await exploreCarCollection.updateOne(
+                        { _id: new ObjectId(booking.carId) },
+                        { $inc: { booking_count: 1 } }
+                    );
+                }
+
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: "Something went wrong" });
+            }
+        });
+
+        app.get('/bookings', verifyToken, async (req, res) => {
+            const email = req.query.email;
+
+            if (req.decoded.email !== email) {
+                return res.status(403).send({ message: "Forbidden access" });
+            }
+
+            const query = { userEmail: email };
+            const result = await bookingsCollection.find(query).toArray();
+            res.send(result);
         });
 
 
